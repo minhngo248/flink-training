@@ -19,15 +19,21 @@
 package org.apache.flink.training.exercises.hourlytips;
 
 import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.training.exercises.common.datatypes.TaxiFare;
 import org.apache.flink.training.exercises.common.sources.TaxiFareGenerator;
 import org.apache.flink.training.exercises.common.utils.MissingSolutionException;
+
+import java.time.Duration;
 
 /**
  * The Hourly Tips exercise from the Flink training.
@@ -75,18 +81,39 @@ public class HourlyTipsExercise {
         // start the data generator
         DataStream<TaxiFare> fares = env.addSource(source);
 
-        // replace this with your solution
-        if (true) {
-            throw new MissingSolutionException();
-        }
+        // Tumbling window of 1 hour
+        // Key by driverId
+        // hour-long windows that compute the total tips for each driver during the hour
+        // and emit a stream of (windowEndTime, driverId, totalTips).
+        DataStream<Tuple3<Long, Long, Float>> hourlyTips = fares
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<TaxiFare>forMonotonousTimestamps()
+                                .withTimestampAssigner((event, timestamp) -> event.getEventTimeMillis() + Duration.ofHours(1).toMillis())
+                )
+                .map(
+                        new MapFunction<TaxiFare, Tuple3<Long, Long, Float>>() {
+                            @Override
+                            public Tuple3<Long, Long, Float> map(TaxiFare fare) {
+                                return Tuple3.of(fare.getEventTimeMillis(), fare.driverId, fare.tip);
+                            }
+                        }
+                )
+                .keyBy(t -> t.f1)
+                .window(TumblingEventTimeWindows.of(Time.hours(1)))
+                .reduce(
+                        (t1, t2) -> Tuple3.of(t1.f0, t1.f1, t1.f2 + t2.f2)
+                );
 
-        // the results should be sent to the sink that was passed in
-        // (otherwise the tests won't work)
-        // you can end the pipeline with something like this:
+        // find the driverId with the highest total tips in each hour
+        // and emit a stream of (windowStartTime, driverId, totalTips).
+        DataStream<Tuple3<Long, Long, Float>> hourlyMax = hourlyTips
+                .keyBy(t -> t.f0)
+                .maxBy(2);
 
-        // DataStream<Tuple3<Long, Long, Float>> hourlyMax = ...
-        // hourlyMax.addSink(sink);
 
+        // print the result on stdout
+        hourlyMax.addSink(sink);
         // execute the pipeline and return the result
         return env.execute("Hourly Tips");
     }
